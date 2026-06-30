@@ -1,0 +1,200 @@
+--Создаем CTE с информацией о выручки, кол-ву проданнных товаров, кол-ву чеков и среднему чеку, сгруппированному по недели в разрезе объектов (точек продаж) реализации
+WITH week_data AS
+(
+    SELECT
+        ISO_YEAR_WEEK,
+        ID_OBJECT,
+        NM_OPEN,
+        DT_OPEN,
+
+        MIN(DT_INV) AS MIN_DT_INV,
+        MAX(DT_INV) AS MAX_DT_INV,
+
+        COUNT(ISO_YEAR_WEEK) AS num_working_days,
+
+        SUM([кол-во_упаковок]) AS packs,
+
+        ROUND(SUM([выручка_без_ндс]),0) AS revenue,
+
+        SUM([кол-во_чеков]) AS checks,
+
+        ROUND(
+            SUM([выручка_без_ндс])
+            /
+            NULLIF(SUM([кол-во_чеков]),0),
+        0) AS avg_check
+
+    FROM [dbo].[object_analisys]
+
+    GROUP BY
+        ISO_YEAR_WEEK,
+        ID_OBJECT,
+        NM_OPEN,
+        DT_OPEN
+),
+
+
+--Создаем CTE с аналогичной информацией, но совокупно по всем объектом. Данное значение будет использольвать в качетсве бенчмарка (целевого показателя)
+benchmark AS
+(
+    SELECT
+        ISO_YEAR_WEEK,
+
+        AVG(revenue) AS benchmark_revenue,
+        AVG(packs) AS benchmark_packs,
+        AVG(checks) AS benchmark_checks,
+        AVG(avg_check) AS benchmark_avg_check
+
+    FROM week_data
+
+    GROUP BY
+        ISO_YEAR_WEEK
+),
+
+--Создаем CTE с динамикой прироста бенчмарка неделя к недели, с помощью оконной функции LAG 
+benchmark_wow AS
+(
+    SELECT
+        b.ISO_YEAR_WEEK,
+
+        ROUND(
+            (benchmark_revenue -
+            LAG(benchmark_revenue) OVER(ORDER BY b.ISO_YEAR_WEEK))
+            /
+            NULLIF(
+            LAG(benchmark_revenue) OVER(ORDER BY b.ISO_YEAR_WEEK),0)
+        ,2) AS benchmark_wow_revenue,
+
+
+        ROUND(
+            (benchmark_packs -
+            LAG(benchmark_packs) OVER(ORDER BY b.ISO_YEAR_WEEK))
+            /
+            NULLIF(
+            LAG(benchmark_packs) OVER(ORDER BY b.ISO_YEAR_WEEK),0)
+        ,2) AS benchmark_wow_packs,
+
+
+        
+        CAST(
+            ROUND(
+                CAST(
+                    benchmark_checks -
+                    LAG(benchmark_checks) OVER(ORDER BY b.ISO_YEAR_WEEK)
+                AS DECIMAL(18,6))
+                /
+                NULLIF(
+                LAG(benchmark_checks) OVER(ORDER BY b.ISO_YEAR_WEEK),0)
+            ,2)
+        AS DECIMAL(18,2)) AS benchmark_wow_checks,
+
+
+        ROUND(
+            (benchmark_avg_check -
+            LAG(benchmark_avg_check) OVER(ORDER BY b.ISO_YEAR_WEEK))
+            /
+            NULLIF(
+            LAG(benchmark_avg_check) OVER(ORDER BY b.ISO_YEAR_WEEK),0)
+        ,2) AS benchmark_wow_avg_check
+
+
+    FROM benchmark b
+)
+
+--Основной SQL запрос
+SELECT
+
+    w.ISO_YEAR_WEEK,
+    w.ID_OBJECT,
+    w.NM_OPEN,
+    w.DT_OPEN,
+    w.MIN_DT_INV,
+    w.MAX_DT_INV, 
+    w.num_working_days,
+
+    w.packs,
+    w.revenue,
+    w.checks,
+    w.avg_check,
+
+
+--Аналогично динамике прироста бенчмарка рссчитывем прирост показателей
+    --Динамика выручки
+    ROUND(
+        (w.revenue -
+        LAG(w.revenue) OVER(
+            PARTITION BY w.ID_OBJECT
+            ORDER BY w.ISO_YEAR_WEEK))
+        /
+        NULLIF(
+        LAG(w.revenue) OVER(
+            PARTITION BY w.ID_OBJECT
+            ORDER BY w.ISO_YEAR_WEEK),0)
+    ,2) AS wow_revenue,
+
+
+    --Динамика проданных товаров
+    ROUND(
+        (w.packs -
+        LAG(w.packs) OVER(
+            PARTITION BY w.ID_OBJECT
+            ORDER BY w.ISO_YEAR_WEEK))
+        /
+        NULLIF(
+        LAG(w.packs) OVER(
+            PARTITION BY w.ID_OBJECT
+            ORDER BY w.ISO_YEAR_WEEK),0)
+    ,2) AS wow_packs,
+
+
+    --Динамика кол-ва чеков
+   CAST(
+       ROUND(
+           CAST(
+               w.checks -
+               LAG(w.checks) OVER(
+                   PARTITION BY w.ID_OBJECT
+                   ORDER BY w.ISO_YEAR_WEEK)
+           AS DECIMAL(18,6))
+           /
+           NULLIF(
+           LAG(w.checks) OVER(
+               PARTITION BY w.ID_OBJECT
+               ORDER BY w.ISO_YEAR_WEEK),0)
+       ,2)
+   AS DECIMAL(18,2)) AS wow_checks,
+
+
+    --Динамика среднего чека
+    ROUND(
+        (w.avg_check -
+        LAG(w.avg_check) OVER(
+            PARTITION BY w.ID_OBJECT
+            ORDER BY w.ISO_YEAR_WEEK))
+        /
+        NULLIF(
+        LAG(w.avg_check) OVER(
+            PARTITION BY w.ID_OBJECT
+            ORDER BY w.ISO_YEAR_WEEK),0)
+    ,2) AS wow_avg_check,
+
+
+    --Значения целевых показателей 
+    bw.benchmark_wow_revenue,
+    bw.benchmark_wow_packs,
+    bw.benchmark_wow_checks,
+    bw.benchmark_wow_avg_check
+
+
+FROM week_data w
+
+LEFT JOIN benchmark_wow bw
+    ON w.ISO_YEAR_WEEK = bw.ISO_YEAR_WEEK
+
+
+ORDER BY
+    w.ID_OBJECT,
+    w.NM_OPEN,
+    w.DT_OPEN,
+    w.MIN_DT_INV,
+    w.num_working_days
